@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Airflow
+airflow.db
+airflow.cfg
+logs/
+
+# Spark / Databricks
+spark-warehouse/
+.metastore_db/
+derby.log
+
+# AWS
+.aws/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local dev
+docs/page.html
+.env
+*.log
