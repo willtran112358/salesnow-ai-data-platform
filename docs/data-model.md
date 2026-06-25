@@ -1,14 +1,74 @@
 # Data Model
 
-## Entity Relationship (Gold Layer)
+## Entity Relationship
 
+```mermaid
+erDiagram
+    DIM_INDUSTRY ||--o{ DIM_COMPANY : classifies
+    DIM_PREFECTURE ||--o{ DIM_COMPANY : located_in
+    DIM_COMPANY ||--o{ FACT_ACTIVITY : has
+    DIM_COMPANY ||--o{ FACT_EMPLOYEE_TREND : tracks
+    DIM_COMPANY ||--o{ CONTACTS : has
+    DIM_COMPANY ||--o| AI_SUMMARIES : summarized_by
+    DIM_COMPANY ||--o{ INTENT_SCORES : scored_daily
+
+    DIM_COMPANY {
+        uuid company_id PK
+        varchar corporate_number UK
+        varchar company_name
+        varchar prefecture_code
+        int employee_count
+        varchar salesforce_account_id
+        timestamptz updated_at
+    }
+
+    FACT_ACTIVITY {
+        uuid activity_id PK
+        uuid company_id FK
+        varchar activity_type
+        timestamptz activity_date
+        float signal_strength
+        jsonb raw_payload
+    }
+
+    INTENT_SCORES {
+        uuid company_id FK
+        date score_date PK
+        float hiring_intent
+        float growth_intent
+        float composite_score
+    }
 ```
-dim_industry ──┐
-               ├──< dim_company >──┬──< fact_activity
-dim_prefecture ┘                  ├──< fact_employee_trend
-                                  ├──< contacts
-                                  ├──< ai_summaries
-                                  └──< intent_scores
+
+## S3 Partition Flow
+
+```mermaid
+flowchart LR
+  subgraph Bronze
+    B1["bronze/crawl/corporate_sites/dt=YYYY-MM-DD/hour=HH/"]
+    B2["bronze/api/gbizinfo/dt=YYYY-MM-DD/"]
+    B3["bronze/crm/salesforce/webhooks/dt=YYYY-MM-DD/"]
+  end
+
+  subgraph Silver
+    S1["silver/companies/dt=YYYY-MM-DD/"]
+    S2["silver/activities/dt=YYYY-MM-DD/"]
+    S3["silver/contacts/dt=YYYY-MM-DD/"]
+  end
+
+  subgraph Gold
+    G1["gold/dim_company/"]
+    G2["gold/fact_activity/"]
+    G3["gold/mart_intent_scores/"]
+  end
+
+  B1 --> S1
+  B2 --> S1
+  B1 --> S2
+  B3 --> S2
+  S1 --> G1
+  S2 --> G2
+  G1 & G2 --> G3
 ```
 
 ## dim_company
@@ -56,12 +116,3 @@ dim_prefecture ┘                  ├──< fact_employee_trend
 | `funding_intent` | FLOAT | Capital event signal |
 | `composite_score` | FLOAT | Weighted combination |
 | `model_version` | VARCHAR(20) | Scoring model ID |
-
-## S3 Path Conventions
-
-```
-bronze/{source}/{entity}/dt={YYYY-MM-DD}/hour={HH}/part-{uuid}.jsonl.gz
-silver/{entity}/dt={YYYY-MM-DD}/part-{uuid}.parquet
-gold/{mart}/dt={YYYY-MM-DD}/part-{uuid}.parquet
-ai-features/{feature}/dt={YYYY-MM-DD}/part-{uuid}.parquet
-```
