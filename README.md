@@ -92,6 +92,39 @@ flowchart LR
 
 ---
 
+## Delivery Context (from 2026-06-26 SalesNow discussion)
+
+This design is grounded in how SalesNow actually runs today. Full notes: [docs/team-and-delivery.md](docs/team-and-delivery.md).
+
+**Confirmed pipeline shape:** `ingest → raw → transform → final layer → AI features (scoring + embedding) → consumers`
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '13px'}}}%%
+flowchart LR
+    SRC["Websites · Jobs · News<br/>Salesforce · HubSpot"] --> CR["Crawler<br/>(batch / back job)"]
+    CR --> RAW[("Raw")]
+    RAW --> TR[("Transform<br/>+ JP language QA")]
+    TR --> FIN[("Final")]
+    FIN --> AI["AI Features<br/>Scoring · Embedding"]
+    AI --> CONS["SaaS API · LLM Agents<br/>Salesforce AppExchange · HubSpot"]
+
+    style RAW fill:#fff5f5,stroke:#fc8181
+    style TR fill:#fffff0,stroke:#ecc94b
+    style FIN fill:#f0fff4,stroke:#68d391
+    style AI fill:#e9d8fd,stroke:#805ad5
+```
+
+**Key requirements raised in the call, now reflected in this repo:**
+
+| Requirement | Where it lives |
+|-------------|----------------|
+| Quality control after crawl, **before** AI (multi-language / Japanese checks) | `src/quality/language_validator.py` |
+| Retry & error handling for batch crawler + stream consumers | `src/ingestion/retry.py` |
+| Team: ~4–5 data engineers + 1–2 backend engineers maintain pipelines & DB | [team-and-delivery.md](docs/team-and-delivery.md) |
+| AI features = lead scoring **and** embeddings consumed by API/agents | architecture diagrams |
+
+---
+
 ## Product Context
 
 SalesNow helps sales teams answer three questions with data:
@@ -145,20 +178,23 @@ flowchart TB
         ER["Entity Resolution"]
         AD["Activity Deltas"]
         IS["Intent Scoring"]
+        EMB["Embeddings"]
         SUM["AI Summaries"]
     end
 
     subgraph SRV["Serving"]
         AUR[("Aurora PostgreSQL")]
         RDS[("Redis Cache")]
+        VEC[("Vector Index")]
     end
 
     subgraph OUT["Consumers"]
         direction LR
         APP["SaaS API"]
-        SF["Salesforce"]
+        AGT["LLM Agents"]
+        AE["Salesforce AppExchange"]
         HS["HubSpot"]
-        MCP["MCP / LLM"]
+        MCP["MCP"]
     end
 
     SRC --> ING --> ORCH --> BRZ
@@ -170,11 +206,11 @@ flowchart TB
     classDef proc fill:#c6f6d5,stroke:#38a169
     classDef serve fill:#fed7d7,stroke:#e53e3e
     class BRZ,SLV,GLD,AIF lake
-    class ER,AD,IS,SUM proc
-    class AUR,RDS serve
+    class ER,AD,IS,EMB,SUM proc
+    class AUR,RDS,VEC serve
 ```
 
-Detailed diagrams: [docs/architecture.md](docs/architecture.md)
+Detailed diagrams: [docs/architecture.md](docs/architecture.md) · Delivery & team context: [docs/team-and-delivery.md](docs/team-and-delivery.md)
 
 ---
 
@@ -364,6 +400,29 @@ with DAG("salesnow_daily_pipeline", schedule_interval="0 2 * * *") as dag:
         launch_type="FARGATE",
     )
     crawl >> silver_cleansing >> gold_dimensional >> quality_check
+```
+
+### 6. Japanese / Multi-language Quality Gate
+
+```python
+# src/quality/language_validator.py
+from src.quality.language_validator import validate_for_japanese_ui
+
+# Content is shown to Japanese users → validate before feeding the LLM layer
+errors = validate_for_japanese_ui(company_summary_text, require_japanese=True)
+if errors:                       # e.g. mojibake / wrong language
+    route_to_quarantine(record, errors)   # don't feed to scoring / embedding
+```
+
+### 7. Crawler Retry & Dead-letter (Batch Resilience)
+
+```python
+# src/ingestion/retry.py
+from src.ingestion.retry import RetryPolicy, process_batch
+
+policy = RetryPolicy(max_attempts=5, base_delay_s=1.0, max_delay_s=60.0)
+dead_letters = process_batch(crawl_records, handler=push_to_s3, policy=policy)
+# One bad record never fails the whole back job; failures go to the DLQ for replay
 ```
 
 ### 6. Aurora Serving Schema

@@ -396,6 +396,66 @@ stateDiagram-v2
 
 ---
 
+## 9a. Multi-language Quality Gate (Japanese)
+
+Because crawled text is ultimately displayed to **Japanese end users**, a
+language-quality gate runs in the transform (silver) layer **before** any text
+reaches the AI scoring / embedding layer. This prevents mojibake and
+wrong-language content from corrupting LLM features.
+
+```mermaid
+%%{init: {'theme': 'base'}}%%
+flowchart LR
+    SILVER[("Silver text<br/>summaries, descriptions")] --> LANG{"Language QA<br/>language_validator"}
+    LANG -->|"valid JP / latin"| AIOK["→ Scoring + Embedding"]
+    LANG -->|"mojibake"| QMB["Quarantine<br/>encoding fix"]
+    LANG -->|"wrong language"| QWL["Quarantine<br/>re-crawl / translate"]
+    QMB --> REPROCESS["Reprocess queue"]
+    QWL --> REPROCESS
+    REPROCESS --> SILVER
+
+    style LANG fill:#fefcbf,stroke:#d69e2e
+    style AIOK fill:#c6f6d5,stroke:#38a169
+    style QMB fill:#fff5f5,stroke:#e53e3e
+    style QWL fill:#fff5f5,stroke:#e53e3e
+```
+
+| Check | Rule | Action on fail |
+|-------|------|----------------|
+| Empty content | length == 0 | Drop / re-crawl |
+| Mojibake | replacement chars or Latin-1 symbol clusters | Quarantine, fix encoding |
+| Wrong language | no Japanese script when required | Quarantine, translate / re-crawl |
+
+Implementation: `src/quality/language_validator.py`.
+
+---
+
+## 9b. Resilience — Retry & Error Handling
+
+The crawler runs as scheduled **batch / back jobs**, and downstream systems
+(Salesforce AppExchange, HubSpot, LLM agents) consume the stream. Transient
+failures use bounded exponential backoff; exhausted records go to a
+**dead-letter queue** so a single bad record never fails the whole job.
+
+```mermaid
+%%{init: {'theme': 'base'}}%%
+flowchart LR
+    REC["Record / Task"] --> TRY{"Attempt"}
+    TRY -->|success| DONE["Commit"]
+    TRY -->|"transient error"| BACK["Backoff<br/>base · 2^n (capped)"]
+    BACK --> TRY
+    TRY -->|"max attempts"| DLQ[("Dead-letter<br/>queue")]
+    DLQ --> REPLAY["Manual / scheduled replay"]
+
+    style TRY fill:#fefcbf,stroke:#d69e2e
+    style DONE fill:#c6f6d5,stroke:#38a169
+    style DLQ fill:#fff5f5,stroke:#e53e3e
+```
+
+Implementation: `src/ingestion/retry.py` (`RetryPolicy`, `with_retry`, `process_batch`).
+
+---
+
 ## 10. Security & Disaster Recovery
 
 ```mermaid
